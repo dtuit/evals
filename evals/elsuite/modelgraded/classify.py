@@ -13,12 +13,7 @@ import openai
 import evals
 import evals.record
 from evals.base import ModelSpec
-from evals.elsuite.utils import (
-    PromptFn,
-    format_necessary,
-    load_modelgraded_specs,
-    scrub_formatting_from_prompt,
-)
+from evals.elsuite.utils import PromptFn, format_necessary, scrub_formatting_from_prompt
 
 INVALID_STR = "__invalid__"
 CHOICE_KEY = "choice"
@@ -45,8 +40,6 @@ Reasoning:""".strip(),
 推論：
     """.strip(),
 }
-
-EVAL_MODELSPEC = ModelSpec(name="gpt-3.5-turbo", model="gpt-3.5-turbo", is_chat=True)
 
 
 def choice_to_str(choice_strings: Iterable[str]) -> str:
@@ -119,11 +112,34 @@ class ModelBasedClassify(evals.Eval):
         self.multicomp_temperature = multicomp_temperature
         self.samples_renamings = samples_renamings or {}
 
+        # check if multiple models are specified
+        if len(self.model_specs.completions) > 1:
+            assert self.multicomp_n == len(
+                self.model_specs.completions
+            ), f"multicomp_n={self.multicomp_n} must be equal to the number of models={len(self.model_specs.completions)} if multiple models are specified."
+        if self.multicomp_n > 1 and self.multicomp_temperature == 0:
+            logging.warning(
+                f"multicomp_temperature={self.multicomp_temperature} is 0 for {self.multicomp_n} model outputs. Specify multiple completion models, e.g. 'oaieval gpt-3.5-turbo,gpt-4 ...'?"
+            )
+
+        if self.model_spec.name == "dummy-completion" or self.model_spec.name == "dummy-chat":
+            self.eval_modelspec = self.model_spec
+        else:
+            self.eval_modelspec = ModelSpec(
+                name="gpt-3.5-turbo", model="gpt-3.5-turbo", is_chat=True
+            )
+
         """import prompt and set attributes"""
-        modelgraded_specs = load_modelgraded_specs(modelgraded_spec_file)
+        modelgraded_specs = self.registry.get_modelgraded_spec(modelgraded_spec_file)
 
         # 'choice_strings' is a list of strings that specifies the possible choices
         self.choice_strings = modelgraded_specs.pop("choice_strings")
+        if self.choice_strings == "from_n":
+            self.choice_strings = [str(i + 1) for i in range(self.multicomp_n)]
+        elif self.choice_strings == "from_n_abc":
+            self.choice_strings = [string.ascii_lowercase[i % 26] for i in range(self.multicomp_n)]
+        elif self.choice_strings == "from_n_ABC":
+            self.choice_strings = [string.ascii_uppercase[i % 26] for i in range(self.multicomp_n)]
         # make sure each choice doesn't contain any punctuation
         for s in self.choice_strings:
             assert not any(c in s for c in string.punctuation), f"{s} contains punctuation"
@@ -194,6 +210,8 @@ class ModelBasedClassify(evals.Eval):
             ), "completion_sample_templates must be specified if multicomp_n > 1"
 
         # since we accept optional args, we need to check that all args are used
+        for key in ("key", "group"):
+            modelgraded_specs.pop(key, None)
         assert not modelgraded_specs, f"Unused args: {modelgraded_specs}. Typo in YAML?"
 
     def eval_sample(self, test_sample: dict, rng: Random) -> None:
@@ -225,9 +243,15 @@ class ModelBasedClassify(evals.Eval):
                         completion = ""
                         completion_i_template = self.completion_sample_templates[v]
                         for i in range(self.multicomp_n):
+                            if len(self.model_specs.completions) > 1:
+                                # use a separate model for each completion
+                                model_spec = self.model_specs.completions[i]
+                            else:
+                                # use the single model for all completions
+                                model_spec = self.model_spec
                             get_input_completion = PromptFn(
                                 test_sample[k],
-                                model_spec=self.model_spec,
+                                model_spec=model_spec,
                                 max_tokens=self.max_tokens,
                                 temperature=self.multicomp_temperature,
                             )
@@ -235,6 +259,8 @@ class ModelBasedClassify(evals.Eval):
                             completion += format_necessary(
                                 completion_i_template,
                                 i=i + 1,
+                                i_abc=string.ascii_lowercase[i % 26],
+                                i_ABC=string.ascii_uppercase[i % 26],
                                 output=completion_i,
                                 n=self.multicomp_n,
                             )
@@ -254,7 +280,7 @@ class ModelBasedClassify(evals.Eval):
             metrics = {}
             evaluate = PromptFn(
                 self.prompt,
-                model_spec=EVAL_MODELSPEC,
+                model_spec=self.eval_modelspec,
                 max_tokens=self.max_tokens,
             )
             eval_kwargs = dict(**completions, **test_sample)
