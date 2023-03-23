@@ -1,9 +1,11 @@
-from typing import List, Tuple
-import string
+import itertools
+import json
 import os
 import random
-import json
+import string
 from dataclasses import dataclass
+from typing import List, Tuple
+
 import numpy as np
 
 COLORS = ["Red", "Green", "Yellow", "Blue", "Purple", "Orange", "Black", "White", "Brown", "Pink"]
@@ -115,7 +117,10 @@ def generate_puzzle_incrementing_pattern(examplars=3, **kwargs):
         example_set.append(PuzzleExample(question, answer))
     return Puzzle(example_set)
 
-def generate_puzzle_sequence_completion(examplars=3):
+def generate_puzzle_sequence_completion(examplars=3, 
+                                        with_skips=False,
+                                        with_skip_masks_and_question=False,
+                                        **kwargs):
     """
     Puzzle Description:
         Given a sequence of letters, predict the last N letters of the sequence
@@ -135,18 +140,24 @@ def generate_puzzle_sequence_completion(examplars=3):
         ans = sequence[-predict:]
         sequence[-(skips+predict): -predict] = [skip_char] * skips
         sequence[-predict:] = [predict_char] * predict
+                   
+        if not with_skip_masks_and_question:
+            sequence = [x for x in sequence if x not in [skip_char, predict_char]]
+        
         return sequence, ans
     
-    skips=3
-    predict=3
+    skips= 3 if with_skips else 0
+    predict= 3
     skip_char="*"
     predict_char="?"
+    
+    base_sequence = string.ascii_uppercase # TODO use other sequences
     
     example_set = []
     for _ in range(examplars+1):
         length = random.randint(13, 16)
         start = random.randint(0, 6)
-        sequence = string.ascii_uppercase[start:start+length] # TODO use other sequences
+        sequence = base_sequence[start:start+length] 
         pat, ans = sequence_completion(sequence, skips=skips, predict=predict, skip_char=skip_char, predict_char=predict_char)
         example_set.append(PuzzleExample(pat, ans))
     
@@ -407,14 +418,66 @@ def generate_puzzle_fill_between(examplars=3, **kwargs):
         example_set.append(PuzzleExample(qry, ans))
     
     return Puzzle(example_set)
-    
 
-    
+def repeat_list(l, n):
+    return list(itertools.islice(itertools.cycle(l), n))
 
-def generate_puzzle_set(generator, num_puzzles=5):
+def generate_puzzle_repeat(examplars=3, **kwargs):
+    """
+    Description:
+        One character repeats iteself in the sequence.
+        repetition direction is away from the other character - the anchor.
+        
+        Since sequence length is always even, there is
+        no ambiguity between this puzzle an a puzzle
+        where the repetition direction is away from the 
+        center position.
+    
+    Example:
+        ----KD--------- -> KKKKKD---------
+        --------DK----- -> --------DKKKKKK
+        -----KD-------- -> KKKKKKD--------
+        ---------DK---- ->
+        
+
+    Ref: https://twitter.com/fchollet/status/1638643323748618240
+    
+    
+    """   
+    example_set = []
+    
+    seqlen = 14 # seqlen must be even
+    background_letter = random.choice("x+-*")
+    anchor, repeator = random.sample(string.ascii_uppercase, 2)
+    
+    left_right = [repeator, anchor], [anchor, repeator]
+    # Prevent all examplars being the same direction, or position
+    repeat_directions = repeat_list([0,1], examplars+1)
+    random.shuffle(repeat_directions)
+    indices = random.sample(range(2, seqlen-1-2-2), examplars+1) # atleast two chars on either side
+    
+    for i in range(examplars+1):
+        direction = repeat_directions[i]
+        kernel = left_right[direction]       
+        seq = [background_letter] * seqlen
+        idx = indices[i]
+        
+        seq[idx:idx+2] = kernel                
+        ans = seq[:]
+        if kernel[0] == repeator:
+            ans[0: idx] = [repeator] * idx
+        else:
+            ans[idx+2:] = [repeator] * (seqlen - idx - 2)
+            
+        example_set.append(PuzzleExample(seq, ans))
+        
+    return Puzzle(example_set)
+
+
+def generate_puzzle_set(generator, num_puzzles=5, **kwargs):
     puzzle_set = []
     for _ in range(num_puzzles):
-        puzzle_set.append(generator())
+        puzzle_set.append(generator(**kwargs))
     return puzzle_set
 
 
@@ -430,15 +493,28 @@ sp_{task_name}.dev.v0:
     samples_jsonl: string_patterns/{task_name}/samples.v0.jsonl
 """.strip()
 
+
+NUM_PUZZLES_PER_TASK = 5
+
 TASK_MAPPING = {
     "colored_ordering": generate_puzzle_colored_ordering,
     "incrementing_pattern": generate_puzzle_incrementing_pattern,
     "sequence_completion": generate_puzzle_sequence_completion,
+    "sequence_completion2": {
+        "generator": generate_puzzle_sequence_completion,
+        "args": {"with_skips": True},
+        },
+    "sequence_completion3": {
+        "generator": generate_puzzle_sequence_completion,
+        "args": {"with_skips": True,
+                 "with_with_skip_masks_and_question": True},
+        },
     "repeating_symetry": generate_puzzle_repeating_symetry,
     "string_dilation": generate_puzzle_string_dilation,
     "string_dilation2": generate_puzzle_string_dilation2,
     "string_dilation3": generate_puzzle_string_dilation3,
     "fill_between": generate_puzzle_fill_between,
+    "puzzle_repeat": generate_puzzle_repeat,
 }
 
 INSTRUCTION = (
@@ -454,13 +530,21 @@ if __name__ == "__main__":
     # exit()
     
     yaml_str = f"# This file is generated by {os.path.basename(__file__)}\n\n"
-    for task_name, generator in TASK_MAPPING.items():
+    for task_name, config in TASK_MAPPING.items():
+        if isinstance(config, dict):
+            generator = config["generator"]
+            args = config["args"]
+        else:
+            generator = config
+            args = {}
         task_path = f"string_patterns/{task_name}"
         output_path = f"evals/registry/data/{task_path}/samples.v0.jsonl"
         if not os.path.exists(output_path):
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
         
-        puzzle_set = generate_puzzle_set(generator, 10)
+        puzzle_set = generate_puzzle_set(generator, 
+                                         num_puzzles=NUM_PUZZLES_PER_TASK,
+                                         **args)
         with open(output_path, "w") as f:
             for puzzle in puzzle_set:
                 puzzle_text = INSTRUCTION + "\n"
