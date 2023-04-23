@@ -4,7 +4,7 @@ scone_alchemy:
   id: scone_alchemy.dev.v0
   metrics: [accuracy]
 scone_alchemy.dev.v0:
-  class: evals.elsuite.basic.match:Match
+  class: evals.elsuite.basic.includes:Includes
   args:
     samples_jsonl: scone/alchemy/samples.v0.jsonl
 
@@ -12,7 +12,7 @@ scone_scene:
   id: scone_scene.dev.v0
   metrics: [accuracy]
 scone_scene.dev.v0:
-  class: evals.elsuite.basic.match:Match
+  class: evals.elsuite.basic.includes:Includes
   args:
     samples_jsonl: scone/scene/samples.v0.jsonl
 
@@ -20,7 +20,7 @@ scone_tangrams:
   id: scone_tangrams.dev.v0
   metrics: [accuracy]
 scone_tangrams.dev.v0:
-  class: evals.elsuite.basic.match:Match
+  class: evals.elsuite.basic.includes:Includes
   args:
     samples_jsonl: scone/tangrams/samples.v0.jsonl
 
